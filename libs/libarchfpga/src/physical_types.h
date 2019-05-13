@@ -28,13 +28,18 @@
 
 #include <functional>
 #include <vector>
+#include <unordered_map>
 #include <string>
 #include <map>
+#include <unordered_map>
 #include <limits>
+#include <numeric>
 
 #include "vtr_ndmatrix.h"
+#include "vtr_hash.h"
 
 #include "logic_types.h"
+#include "clock_types.h"
 
 //Forward declarations
 struct t_clock_arch;
@@ -59,6 +64,75 @@ struct t_pb_graph_edge;
 struct t_cluster_placement_primitive;
 struct t_arch;
 enum class e_sb_type;
+
+/****************************************************************************/
+/* FPGA metadata types                                                      */
+/****************************************************************************/
+/* t_metadata_value, and t_metadata_dict provide a types to store
+ * metadata about the FPGA architecture and routing routing graph along side
+ * the pb_type, grid, node and edge descriptions.
+ *
+ * The metadata is stored as a simple key/value map.  key's are string and an
+ * optional coordinate. t_metadata_value provides the value storage, which is a
+ * string.
+ */
+
+// Metadata value storage.
+class t_metadata_value {
+public:
+    explicit t_metadata_value(std::string v) : value_(v) {}
+    explicit t_metadata_value(const t_metadata_value &o) : value_(o.value_) {}
+
+    // Return string value.
+    std::string as_string() const { return value_; }
+
+private:
+    std::string value_;
+};
+
+// Metadata storage dictionary.
+struct t_metadata_dict : std::unordered_map<
+                            std::string,
+                            std::vector<t_metadata_value>> {
+    // Is this key present in the map?
+    inline bool has(std::string key) const {
+        return this->count(key) >= 1;
+    }
+
+    // Get all metadata values matching key.
+    //
+    // Returns nullptr if key is not found.
+    inline const std::vector<t_metadata_value>* get(std::string key) const {
+        auto iter = this->find(key);
+        if(iter != this->end()) {
+          return &iter->second;
+        }
+        return nullptr;
+    }
+
+    // Get metadata values matching key.
+    //
+    // Returns nullptr if key is not found or if multiple values are prsent
+    // per key.
+    inline const t_metadata_value* one(std::string key) const {
+        auto values = get(key);
+        if (values == nullptr) {
+            return nullptr;
+        }
+        if (values->size() != 1) {
+            return nullptr;
+        }
+        return &((*values)[0]);
+    }
+
+    // Adds value to key.
+    void add(std::string key, std::string value) {
+        // Get the iterator to the key, which may already have elements if
+        // add was called with this key in the past.
+        auto iter_inserted = this->emplace(key, std::vector<t_metadata_value>());
+        iter_inserted.first->second.push_back(t_metadata_value(value));
+    }
+};
 
 /*************************************************************************************************/
 /* FPGA basic definitions                                                                        */
@@ -249,6 +323,14 @@ struct t_grid_loc_def {
 
     t_grid_loc_spec x;      //Horizontal location specification
     t_grid_loc_spec y;      //Veritcal location specification
+
+    // When 1 metadata tag is split amoung multiple t_grid_loc_def, one
+    // t_grid_loc_def is arbitrarily choosen to own the metadata, and the other
+    // t_grid_loc_def point to the owned version.
+    std::unique_ptr<t_metadata_dict> owned_meta;
+    t_metadata_dict *meta; // Metadata for this location definition. This
+                           // metadata may be shared with multiple grid_locs
+                           // that come from a common definition.
 };
 
 enum GridDefType {
@@ -434,7 +516,12 @@ constexpr int DEFAULT_SWITCH = -2;
  * pin_avg_width_offset: Average width offset to specified pin (exact if only a single physical pin instance)
  * pin_avg_height_offset: Average height offset to specified pin (exact if only a single physical pin instance)
  * pin_class: The class a pin belongs to
- * is_global_pin: Whether or not a pin is global (hence not routed)
+ * is_ignored_pin: Whether or not a pin is ignored durring rr_graph generation and routing.
+ *                 This is usually the case for clock pins and other global pins unless the
+ *                 clock_modeling option is set to route the clock through regular inter-block
+ *                 wiring or through a dedicated clock network.
+ * is_pin_global: Whether or not this pin is marked as global. Clock pins and other specified
+ *                global pins in the architecture file are marked as global.
  *
  * fc_specs: The Fc specifications for all pins
  *
@@ -475,7 +562,8 @@ struct t_type_descriptor /* TODO rename this.  maybe physical type descriptor or
     std::vector<int> pin_width_offset; //[0..num_pins-1]
     std::vector<int> pin_height_offset; //[0..num_pins-1]
 	int *pin_class = nullptr; /* [0..num_pins-1] */
-	bool *is_global_pin = nullptr; /* [0..num_pins-1] */
+	bool *is_ignored_pin = nullptr; /* [0..num_pins-1] */
+    bool *is_pin_global = nullptr; /* [0..num_pins -1] */
 
     std::vector<t_fc_specification> fc_specs;
 
@@ -495,7 +583,7 @@ struct t_type_descriptor /* TODO rename this.  maybe physical type descriptor or
 	int index = -1; /* index of type descriptor in array (allows for index referencing) */
 
     /* Returns the indices of pins that contain a clock for this physical logic block */
-    std::vector<int> get_clock_pins_indices();
+    std::vector<int> get_clock_pins_indices() const;
 
 };
 typedef const t_type_descriptor* t_type_ptr;
@@ -549,6 +637,8 @@ typedef const t_type_descriptor* t_type_ptr;
  *      int num_output_pins: A count of the total number of output pins
  *      timing: Timing matrix of block [0..num_inputs-1][0..num_outputs-1]
  *      parent_mode: mode of the parent block
+ *      t_mode_power: ???
+ *      meta: Table storing extra arbitrary metadata attributes.
  */
 struct t_pb_type {
 	char* name = nullptr;
@@ -569,12 +659,13 @@ struct t_pb_type {
 	t_mode *parent_mode = nullptr;
 	int depth = 0; /* depth of pb_type */
 
-	float max_internal_delay = -1; //TODO: remove when VPR's classic timing analyzer is removed
 	t_pin_to_pin_annotation *annotations = nullptr; /* [0..num_annotations-1] */
 	int num_annotations = 0;
 
 	/* Power related members */
 	t_pb_type_power * pb_type_power = nullptr;
+
+	t_metadata_dict meta;
 };
 
 /** Describes an operational mode of a clustered logic block
@@ -589,18 +680,22 @@ struct t_pb_type {
  *      num_interconnect: Total number of interconnect tags specified by user
  *      parent_pb_type: Which parent contains this mode
  *      index: Index of mode in array with other modes
+ *      t_mode_power: ???
+ *      meta: Table storing extra arbitrary metadata attributes.
  */
 struct t_mode {
-	char* name;
-	t_pb_type *pb_type_children; /* [0..num_child_pb_types] */
-	int num_pb_type_children;
-	t_interconnect *interconnect;
-	int num_interconnect;
-	t_pb_type *parent_pb_type;
-	int index;
+	char* name = nullptr;
+	t_pb_type *pb_type_children = nullptr; /* [0..num_child_pb_types] */
+	int num_pb_type_children = 0;
+	t_interconnect *interconnect = nullptr;
+	int num_interconnect = 0;
+	t_pb_type *parent_pb_type = nullptr;
+	int index = 0;
 
 	/* Power related members */
-	t_mode_power * mode_power;
+	t_mode_power * mode_power = nullptr;
+
+	t_metadata_dict meta;
 };
 
 /** Describes an interconnect edge inside a cluster
@@ -621,23 +716,24 @@ struct t_mode {
  */
 struct t_interconnect {
 	enum e_interconnect type;
-	char *name;
+	char *name = nullptr;
 
-	char *input_string;
-	char *output_string;
+	char *input_string = nullptr;
+	char *output_string = nullptr;
 
-	t_pin_to_pin_annotation *annotations; /* [0..num_annotations-1] */
-	int num_annotations;
-	bool infer_annotations;
+	t_pin_to_pin_annotation *annotations = nullptr; /* [0..num_annotations-1] */
+	int num_annotations = 0;
+	bool infer_annotations = false;
 
-	int line_num; /* Interconnect is processed later, need to know what line number it messed up on to give proper error message */
+	int line_num = 0; /* Interconnect is processed later, need to know what line number it messed up on to give proper error message */
 
-	int parent_mode_index;
+	int parent_mode_index = 0;
 
 	/* Power related members */
-	t_mode *parent_mode;
+	t_mode *parent_mode = nullptr;
 
-	t_interconnect_power *interconnect_power;
+	t_interconnect_power *interconnect_power = nullptr;
+	t_metadata_dict meta;
 };
 
 /** Describes I/O and clock ports
@@ -765,13 +861,15 @@ struct t_pin_to_pin_annotation {
  *  accessible from each position may be different).
  *
  *  Data members:
- *      pb_type: Pointer to the type of pb graph node this belongs to
- *      mode: parent mode of operation
- *      placement_index: there are a certain number of pbs available, this gives the index of the node
- *      child_pb_graph_nodes: array of children pb graph nodes organized into modes
- *      parent_pb_graph_node: parent pb graph node
+ *      pb_type               : Pointer to the type of pb graph node this belongs to
+ *      placement_index       : there are a certain number of pbs available, this gives the index of the node
+ *      child_pb_graph_nodes  : array of children pb graph nodes organized into modes
+ *      parent_pb_graph_node  : parent pb graph node
+ *      total_primitive_count : Total number of this primitive type in the cluster. If there are 10 ALMs per cluster
+ *                              and 2 FFs per ALM (given the mode of the parent of this primitive) then the total is 20.
  */
-struct t_pb_graph_node {
+class t_pb_graph_node {
+public:
 	t_pb_type *pb_type;
 
 	int placement_index;
@@ -801,31 +899,26 @@ struct t_pb_graph_node {
 	int *output_pin_class_size; /* Stores the number of pins that belong to a particular output pin class */
 	int num_output_pin_class; /* number of output pin classes that this pb_graph_node has */
 
+    int total_primitive_count; /* total number of this primitive type in the cluster */
+
 	/* Interconnect instances for this pb
 	 * Only used for power
 	 */
 	t_pb_graph_node_power * pb_node_power;
 	t_interconnect_pins ** interconnect_pins; /* [0..num_modes-1][0..num_interconnect_in_mode] */
 
+    // Returns true if this pb_graph_node represents a primitive type (primitives have 0 modes)
+    bool is_primitive() const { return this->pb_type->num_modes == 0; }
+
+    // Returns true if this pb_graph_node represents a root graph node (ex. clb)
+    bool is_root() const { return this->parent_pb_graph_node == nullptr; }
+
     //Returns the number of pins on this graph node
-    //  Note this is the total for all ports on this node exluding any children (i.e. sum of all num_input_pins, num_output_pins, num_clock_pins)
-    int num_pins() {
-        int npins = 0;
-
-        for(int iport = 0; iport < num_input_ports; ++iport) {
-            npins += num_input_pins[iport];
-        }
-
-        for(int iport = 0; iport < num_output_ports; ++iport) {
-            npins += num_output_pins[iport];
-        }
-
-        for(int iport = 0; iport < num_clock_ports; ++iport) {
-            npins += num_clock_pins[iport];
-        }
-
-        return npins;
-    }
+    //  Note this is the total for all ports on this node excluding any children (i.e. sum of all num_input_pins, num_output_pins, num_clock_pins)
+    int num_pins() const;
+    // Returns a string containing the hierarchical type name of the pb_graph_node
+    // Ex: clb[0][default]/lab[0][default]/fle[3][n1_lut6]/ble6[0][default]/lut6[0]
+    std::string hierarchical_type_name() const;
 };
 
 
@@ -851,7 +944,8 @@ enum e_pb_graph_pin_type {
  *      parent_node: parent pb_graph_node
  *      pin_count_in_cluster: Unique number for pin inside cluster
  */
-struct t_pb_graph_pin {
+class t_pb_graph_pin {
+public:
 	t_port *port = nullptr;
 	int pin_number = 0;
 	t_pb_graph_edge** input_edges = nullptr; /* [0..num_input_edges] */
@@ -893,6 +987,25 @@ struct t_pb_graph_pin {
 	bool is_forced_connection = false; /* This output pin connects to one and only one input pin */
 
 	t_pb_graph_pin_power* pin_power = nullptr;
+
+// class member functions
+public:
+    // Returns true if this pin belongs to a primitive block like
+    // a LUT or FF, instead of a cluster-level block like a CLB.
+    bool is_primitive_pin() const {
+        return this->parent_node->is_primitive();
+    }
+    // Returns true if this pin belongs to a root pb_block which is a pb_block
+    // that has no parent block. For example, pins of a CLB, IO, DSP, etc.
+    bool is_root_block_pin() const {
+        return this->parent_node->is_root();
+    }
+    // This function returns a string that contains the name of the pin
+    // and the entire sequence of pb_types in the hierarchy from the block
+    // of this pin back to the cluster-level (top-level) pb_type in the
+    // following format: clb[0]/lab[0]/fle[3]/ble6[0]/lut6[0].in[0]
+    std::string to_string() const;
+
 };
 
 
@@ -905,8 +1018,18 @@ struct t_pb_graph_pin {
  *      num_input_pins: Number of input pins entering this edge
  *      output_pins: array of pb_type graph output pins ptrs exiting this edge
  *      num_output_pins: Number of output pins exiting this edge
+ *
+ *      num_pack_patterns: number of pack patterns this edge belongs to
+ *      pack_pattern_names: [0..num_pack_patterns-1] name of each pack pattern
+ *      pack_pattern_indices: [0..num_pack_patterns-1] id of each pack pattern
+ *      infer_pattern: if true, pattern of this edge could be inferred by checking
+ *                     input/output edges. This is true when the edge is a single
+ *                     fanout edge and is driven or driving another edge which is
+ *                     annotated with a pack pattern.
  */
-struct t_pb_graph_edge {
+class t_pb_graph_edge {
+public:
+    /* edge connectivity */
 	t_pb_graph_pin **input_pins;
 	int num_input_pins;
 	t_pb_graph_pin **output_pins;
@@ -923,10 +1046,22 @@ struct t_pb_graph_edge {
 	int driver_pin;
 
 	/* pack pattern info */
-	const char **pack_pattern_names; /*[0..num_pack_patterns(of_edge)-1]*/
-	int *pack_pattern_indices; /*[0..num_pack_patterns(of_edge)-1]*/
 	int num_pack_patterns;
-	bool infer_pattern; /*If true, infer pattern based on patterns connected to it*/
+	const char **pack_pattern_names;
+	int *pack_pattern_indices;
+	bool infer_pattern;
+
+// class member functions
+public:
+    // Returns true is this edge is annotated with the given pattern_index
+    //  pattern_index : index of the packing pattern
+    bool annotated_with_pattern(int pattern_index) const;
+
+    // Returns true is this edge is annotated with pattern_index or its pattern
+    // is inferred and a connected output edge is annotated with pattern_index
+    //   pattern_index : index of the packing pattern
+    bool belongs_to_pattern(int pattern_index) const;
+
 };
 
 struct t_pb_graph_node_power {
@@ -1004,9 +1139,10 @@ enum e_Fc_type {
  * Cmetal: Capacitance of a routing track, per unit logic block length.      *
  * Rmetal: Resistance of a routing track, per unit logic block length.       *
  * (UDSD by AY) drivers: How do signals driving a routing track connect to   *
- *                       the track?                                          */
+ *                       the track?                                          *
+ * meta: Table storing extra arbitrary metadata attributes.                  */
 struct t_segment_inf {
-	char *name;
+	std::string name;
 	int frequency;
 	int length;
 	short arch_wire_switch;
@@ -1017,10 +1153,8 @@ struct t_segment_inf {
 	float Rmetal;
 	float Cmetal;
 	enum e_directionality directionality;
-	bool *cb;
-	int cb_len;
-	bool *sb;
-	int sb_len;
+	std::vector<bool> cb;
+	std::vector<bool> sb;
 	//float Cmetal_per_m; /* Wire capacitance (per meter) */
 };
 
@@ -1168,15 +1302,15 @@ struct t_direct_inf {
 	int y_offset;
 	int z_offset;
 	int switch_type;
+    e_side from_side;
+    e_side to_side;
 	int line;
 };
 
 
-enum class WireConnType {
-    FROM,
-    TO,
-    MIN,
-    MAX
+enum class SwitchPointOrder {
+    FIXED,      //Switchpoints are ordered as specified in architecture
+    SHUFFLED    //Switchpoints are shuffled (more diversity)
 };
 
 //A collection of switchpoints associated with a segment
@@ -1189,26 +1323,24 @@ struct t_wire_switchpoints {
 struct t_wireconn_inf {
     std::vector<t_wire_switchpoints> from_switchpoint_set; //The set of segment/wirepoints representing the 'from' set (union of all t_wire_switchpoints in vector)
     std::vector<t_wire_switchpoints> to_switchpoint_set;   //The set of segment/wirepoints representing the 'to' set (union of all t_wire_switchpoints in vector)
-    WireConnType num_conns_type;              /* The type specifies how many connections should be made for this wireconn.
-                                               *
-                                               * FROM: The number of generated connections between the 'from' and 'to' sets equals the
-                                               *       size of the 'from' set. This ensures every element in the from set is connected
-                                               *       to an element of the 'to' set.
-                                               *       Note: this it may result in 'to' elements being driven by multiple 'from'
-                                               *       elements (if 'from' is larger than 'to'), or in some elements of 'to' having
-                                               *       no driving connections (if 'to' is larger than 'from').
-                                               * TO:   The number of generated connections is set equal to the size of the 'to' set.
-                                               *       This ensures that each element of the 'to' set has precisely one incomming connection.
-                                               *       Note: this may result in 'from' elements driving multiple 'to' elements (if 'to' is
-                                               *       larger than 'from'), or some 'from' elements driving to 'to' elements (if 'from' is
-                                               *       larger than 'to')
-                                               * MIN:  The number of generated connections is equal to the minimum size of the 'from' or 'to' sets.
-                                               *       This ensures that no wire in the 'from' or 'to' set is connected more than once.
-                                               *       Note: this will leave some elements from the larger set disconnected.
-                                               * MAX:  The number of generated connections is equal to the maximum size of the 'from' or 'to' sets.
-                                               *       This ensures that no elements in the 'from' or 'to' set is left disconnected.
-                                               *       Note: this will result in multiple connections to some elements from the smaller set.
-                                               */
+    SwitchPointOrder from_switchpoint_order = SwitchPointOrder::FIXED; //The desired from_switchpoint_set ordering
+    SwitchPointOrder to_switchpoint_order = SwitchPointOrder::FIXED; //The desired to_switchpoint_set ordering
+
+    std::string num_conns_formula;      /* Specifies how many connections should be made for this wireconn.
+                                         *
+                                         * '<int>': A specific number of connections
+                                         * 'from':  The number of generated connections between the 'from' and 'to' sets equals the
+                                         *          size of the 'from' set. This ensures every element in the from set is connected
+                                         *          to an element of the 'to' set.
+                                         *          Note: this it may result in 'to' elements being driven by multiple 'from'
+                                         *          elements (if 'from' is larger than 'to'), or in some elements of 'to' having
+                                         *          no driving connections (if 'to' is larger than 'from').
+                                         * 'to':    The number of generated connections is set equal to the size of the 'to' set.
+                                         *          This ensures that each element of the 'to' set has precisely one incomming connection.
+                                         *          Note: this may result in 'from' elements driving multiple 'to' elements (if 'to' is
+                                         *          larger than 'from'), or some 'from' elements driving to 'to' elements (if 'from' is
+                                         *          larger than 'to')
+                                         */
 };
 
 /* represents a connection between two sides of a switchblock */
@@ -1262,6 +1394,12 @@ struct t_switchblock_inf{
 	std::vector<t_wireconn_inf> wireconns;	/* list of wire types/groups this SB will connect */
 };
 
+/* Clock related data types used for building a dedicated clock network */
+struct t_clock_arch_spec {
+    std::vector<t_clock_network_arch> clock_networks_arch;
+    std::unordered_map<std::string, t_metal_layer> clock_metal_layers;
+    std::vector<t_clock_connection_arch> clock_connections_arch;
+};
 
 /*   Detailed routing architecture */
 struct t_arch {
@@ -1274,16 +1412,15 @@ struct t_arch {
 	float R_minW_pmos;
 	int Fs;
 	float grid_logic_tile_area;
-	t_segment_inf * Segments;
-	int num_segments;
-	t_arch_switch_inf *Switches;
+	std::vector<t_segment_inf> Segments;
+	t_arch_switch_inf *Switches = nullptr;
 	int num_switches;
-	t_direct_inf *Directs;
-	int num_directs;
-	t_model *models;
-	t_model *model_library;
-	t_power_arch * power;
-	t_clock_arch * clocks;
+	t_direct_inf *Directs = nullptr;
+	int num_directs = 0;
+	t_model *models = nullptr;
+	t_model *model_library = nullptr;
+	t_power_arch * power = nullptr;
+	t_clock_arch * clocks = nullptr;
 
     //The name of the switch used for the input connection block (i.e. to
     //connect routing tracks to block pins).
@@ -1291,6 +1428,8 @@ struct t_arch {
     std::string ipin_cblock_switch_name;
 
     std::vector<t_grid_def> grid_layouts; //Set of potential device layouts
+
+    t_clock_arch_spec clock_arch; // Clock related data types
 };
 
 #endif

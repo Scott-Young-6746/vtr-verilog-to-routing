@@ -21,7 +21,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 */
 #include "soft_logic_def_parser.h"
-#include "types.h"
+#include "odin_types.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -33,6 +33,8 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 #include "vtr_util.h"
 #include "vtr_memory.h"
+#include "vtr_path.h"
+
 #include <algorithm>
 #include <string>
 
@@ -61,12 +63,24 @@ blk_len_of_structure
 */
 std::map<std::string,soft_sub_structure*> soft_def_map;
 
-void read_soft_def_file(std::string input_file_name)
+void read_soft_def_file(t_model *hard_adder_models)
 {
-	FILE *input_file = fopen(input_file_name.c_str(),"r");
-  if(input_file)
-  {
-		printf("Reading soft_logic definition file @ %s ... ", input_file_name.c_str());
+	std::string soft_distribution(global_args.adder_def);
+	if(hard_adder_models || !global_args.adder_def || soft_distribution == "default")
+	{
+		// given any of these cases do not optimize soft logic for adders
+		return;
+	}
+
+	// use the default optimized file input
+	if(soft_distribution == "optimized")
+		soft_distribution = vtr::dirname(global_args.program_name) + "odin.soft_config";
+	//else keep as is and try to open it
+
+	FILE *input_file = fopen(soft_distribution.c_str(),"r");
+	if(input_file)
+	{
+		printf("Reading soft_logic definition file @ %s ... ", soft_distribution.c_str());
 
 		soft_def_map[std::string("+_0")] = NULL;
 		soft_def_map[std::string("/_0")] = NULL;
@@ -136,11 +150,10 @@ void read_soft_def_file(std::string input_file_name)
 		{
 			/* something went wrong! empty everything and throw a warning */
 			soft_def_map = std::map<std::string,soft_sub_structure*>();
-			printf("ERROR line::%d\n",line_number);
+			warning_message(PARSE_ERROR, -1, -1, "%s", "ERROR parsing adder soft logic definition file @ line::%ld\n",line_number);
 		}
-		else
-			printf("DONE read %d lines\n",line_number);
-  }
+
+  	}
 }
 
 /*---------------------------------------------------------------------------------------------

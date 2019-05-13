@@ -25,7 +25,6 @@
 #include <map>
 using namespace std;
 
-#include "vtr_list.h"
 #include "vtr_assert.h"
 #include "vtr_memory.h"
 
@@ -91,8 +90,8 @@ float pin_dens(t_pb * pb, t_pb_graph_pin * pin, ClusterBlockId iblk) {
     auto& power_ctx = g_vpr_ctx.mutable_power();
 
 	if (pb) {
-		AtomNetId net_id = cluster_ctx.clb_nlist.block_pb(iblk)->pb_route[pin->pin_count_in_cluster].atom_net_id;
-		if (net_id) {
+		if (cluster_ctx.clb_nlist.block_pb(iblk)->pb_route.count(pin->pin_count_in_cluster)) {
+            AtomNetId net_id = cluster_ctx.clb_nlist.block_pb(iblk)->pb_route[pin->pin_count_in_cluster].atom_net_id;
 			density = power_ctx.atom_net_power[net_id].density;
 		}
 	}
@@ -108,8 +107,8 @@ float pin_prob(t_pb * pb, t_pb_graph_pin * pin, ClusterBlockId iblk) {
     auto& power_ctx = g_vpr_ctx.mutable_power();
 
 	if (pb) {
-		AtomNetId net_id = cluster_ctx.clb_nlist.block_pb(iblk)->pb_route[pin->pin_count_in_cluster].atom_net_id;
-		if (net_id) {
+		if (cluster_ctx.clb_nlist.block_pb(iblk)->pb_route.count(pin->pin_count_in_cluster)) {
+            AtomNetId net_id = cluster_ctx.clb_nlist.block_pb(iblk)->pb_route[pin->pin_count_in_cluster].atom_net_id;
 			prob = power_ctx.atom_net_power[net_id].probability;
 		}
 	}

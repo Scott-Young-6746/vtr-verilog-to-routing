@@ -22,7 +22,7 @@ static void check_rr_edge(int from_node, int from_edge, int to_node);
 
 void check_rr_graph(const t_graph_type graph_type,
         const DeviceGrid& grid,
-        const int num_rr_switches, const t_type_ptr types) {
+        const t_type_ptr types) {
 
     e_route_type route_type = DETAILED;
     if (graph_type == GRAPH_GLOBAL) {
@@ -33,8 +33,11 @@ void check_rr_graph(const t_graph_type graph_type,
 
     auto total_edges_to_node = std::vector<int>(device_ctx.rr_nodes.size());
     auto switch_types_from_current_to_node = std::vector<unsigned char>(device_ctx.rr_nodes.size());
+    const int num_rr_switches = device_ctx.rr_switch_inf.size();
 
     for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
+
+        device_ctx.rr_nodes[inode].validate();
 
         /* Ignore any uninitialized rr_graph nodes */
         if ((device_ctx.rr_nodes[inode].type() == SOURCE)
@@ -122,6 +125,21 @@ void check_rr_graph(const t_graph_type graph_type,
         /* Slow test could leave commented out most of the time. */
         check_unbuffered_edges(inode);
 
+        //Check that all config/non-config edges are appropriately organized
+        for (auto edge : device_ctx.rr_nodes[inode].configurable_edges()) {
+            if (!device_ctx.rr_nodes[inode].edge_is_configurable(edge)) {
+                VPR_THROW(VPR_ERROR_ROUTE, "in check_rr_graph: node %d edge %d is non-configurable, but in configurable edges",
+                        inode, edge);
+            }
+        }
+
+        for (auto edge : device_ctx.rr_nodes[inode].non_configurable_edges()) {
+            if (device_ctx.rr_nodes[inode].edge_is_configurable(edge)) {
+                VPR_THROW(VPR_ERROR_ROUTE, "in check_rr_graph: node %d edge %d is configurable, but in non-configurable edges",
+                        inode, edge);
+            }
+        }
+
     } /* End for all rr_nodes */
 
     /* I built a list of how many edges went to everything in the code above -- *
@@ -205,7 +223,7 @@ static bool rr_node_is_global_clb_ipin(int inode) {
 
     ipin = device_ctx.rr_nodes[inode].ptc_num();
 
-    return type->is_global_pin[ipin];
+    return type->is_ignored_pin[ipin];
 }
 
 void check_rr_node(int inode, enum e_route_type route_type, const DeviceContext& device_ctx) {
@@ -247,7 +265,7 @@ void check_rr_node(int inode, enum e_route_type route_type, const DeviceContext&
                 "in check_rr_node: inode %d (type %d) had a ptc_num of %d.\n", inode, rr_type, ptc_num);
     }
 
-    if (cost_index < 0 || cost_index >= device_ctx.num_rr_indexed_data) {
+    if (cost_index < 0 || cost_index >= (int) device_ctx.rr_indexed_data.size()) {
         vpr_throw(VPR_ERROR_ROUTE, __FILE__, __LINE__,
                 "in check_rr_node: node %d cost index (%d) is out of range.\n", inode, cost_index);
     }

@@ -84,7 +84,6 @@ static void print_net_name(AtomNetId net_id, int *column, FILE * fpout) {
 
 /* Print netlist atom in blif format */
 void print_atom_block(FILE *fpout, AtomBlockId atom_blk) {
-	t_pb_route * pb_route;
 	const t_pb_graph_node *pb_graph_node;
 	t_pb_type *pb_type;
 
@@ -94,9 +93,10 @@ void print_atom_block(FILE *fpout, AtomBlockId atom_blk) {
 	ClusterBlockId clb_index = atom_ctx.lookup.atom_clb(atom_blk);
 	VTR_ASSERT(clb_index != ClusterBlockId::INVALID());
 
-	pb_route = cluster_ctx.clb_nlist.block_pb(clb_index)->pb_route;
-	VTR_ASSERT(pb_route != nullptr);
+	const auto& pb_route = cluster_ctx.clb_nlist.block_pb(clb_index)->pb_route;
 	pb_graph_node = atom_ctx.lookup.atom_pb_graph_node(atom_blk);
+    VTR_ASSERT(pb_graph_node);
+
 	pb_type = pb_graph_node->pb_type;
 
 
@@ -352,7 +352,6 @@ void print_atom_block(FILE *fpout, AtomBlockId atom_blk) {
 }
 
 void print_routing_in_clusters(FILE *fpout, ClusterBlockId clb_index) {
-	t_pb_route * pb_route;
 	t_pb_graph_node *pb_graph_node;
 	t_pb_graph_node *pb_graph_node_of_pin;
 	int max_pb_graph_pin;
@@ -364,7 +363,7 @@ void print_routing_in_clusters(FILE *fpout, ClusterBlockId clb_index) {
 	pb_graph_pin_lookup = alloc_and_load_pb_graph_pin_lookup_from_index(cluster_ctx.clb_nlist.block_type(clb_index));
 	pb_graph_node = cluster_ctx.clb_nlist.block_pb(clb_index)->pb_graph_node;
 	max_pb_graph_pin = pb_graph_node->total_pb_pins;
-	pb_route = cluster_ctx.clb_nlist.block_pb(clb_index)->pb_route;
+	const auto& pb_route = cluster_ctx.clb_nlist.block_pb(clb_index)->pb_route;
 
 	for(int i = 0; i < max_pb_graph_pin; i++) {
 		if(pb_route[i].atom_net_id) {
@@ -372,20 +371,20 @@ void print_routing_in_clusters(FILE *fpout, ClusterBlockId clb_index) {
 			pb_graph_node_of_pin = pb_graph_pin_lookup[i]->parent_node;
 
 			/* Print interconnect */
-			if(pb_graph_node_of_pin->pb_type->num_modes != 0 && pb_route[i].driver_pb_pin_id == OPEN) {
+			if(!pb_graph_node_of_pin->is_primitive() && pb_route[i].driver_pb_pin_id == OPEN) {
 				/* Logic block input pin */
-				VTR_ASSERT(pb_graph_node_of_pin->parent_pb_graph_node == nullptr);
+				VTR_ASSERT(pb_graph_node_of_pin->is_root());
 				fprintf(fpout, ".names ");
 				print_net_name(pb_route[i].atom_net_id, &column, fpout);
 				fprintf(fpout, " clb_%zu_rr_node_%d\n", size_t(clb_index), i);
 				fprintf(fpout, "1 1\n\n");
-			} else if (pb_graph_node_of_pin->pb_type->num_modes != 0 && pb_graph_node_of_pin->parent_pb_graph_node == nullptr) {
+			} else if (!pb_graph_node_of_pin->is_primitive() && pb_graph_node_of_pin->is_root()) {
 				/* Logic block output pin */
 				fprintf(fpout, ".names clb_%zu_rr_node_%d ", size_t(clb_index), pb_route[i].driver_pb_pin_id);
 				print_net_name(pb_route[i].atom_net_id, &column, fpout);
 				fprintf(fpout, "\n");
 				fprintf(fpout, "1 1\n\n");
-			} else if (pb_graph_node_of_pin->pb_type->num_modes != 0 || pb_graph_pin_lookup[i]->port->type != OUT_PORT) {
+			} else if (!pb_graph_node_of_pin->is_primitive() || pb_graph_pin_lookup[i]->port->type != OUT_PORT) {
 				/* Logic block internal pin */
 				fprintf(fpout, ".names clb_%zu_rr_node_%d clb_%zu_rr_node_%d\n", size_t(clb_index), pb_route[i].driver_pb_pin_id, size_t(clb_index), i);
 				fprintf(fpout, "1 1\n\n");
@@ -472,7 +471,7 @@ void output_blif(const t_arch *arch, const char *out_fname) {
 	auto& cluster_ctx = g_vpr_ctx.clustering();
 
 	// Check that there's at least one block that exists
-	if(cluster_ctx.clb_nlist.block_pb(ClusterBlockId(0))->pb_route == nullptr) {
+	if(cluster_ctx.clb_nlist.block_pb(ClusterBlockId(0)) == nullptr) {
 		return;
 	}
 

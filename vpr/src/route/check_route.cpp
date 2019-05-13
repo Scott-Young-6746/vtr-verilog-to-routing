@@ -53,7 +53,7 @@ static bool check_non_configurable_edges(ClusterNetId net, const t_non_configura
 
 /************************ Subroutine definitions ****************************/
 
-void check_route(enum e_route_type route_type, int num_switches) {
+void check_route(enum e_route_type route_type) {
 
 	/* This routine checks that a routing:  (1) Describes a properly         *
 	 * connected path for each net, (2) this path connects all the           *
@@ -71,6 +71,8 @@ void check_route(enum e_route_type route_type, int num_switches) {
     auto& device_ctx = g_vpr_ctx.device();
     auto& cluster_ctx = g_vpr_ctx.clustering();
     auto& route_ctx = g_vpr_ctx.routing();
+
+    const int num_switches = device_ctx.rr_switch_inf.size();
 
 	VTR_LOG("\n");
 	VTR_LOG("Checking to ensure routing is legal...\n");
@@ -100,14 +102,14 @@ void check_route(enum e_route_type route_type, int num_switches) {
 
 	/* Now check that all nets are indeed connected. */
 	for (auto net_id : cluster_ctx.clb_nlist.nets()) {
-		if (cluster_ctx.clb_nlist.net_is_global(net_id) || cluster_ctx.clb_nlist.net_sinks(net_id).size() == 0) /* Skip global nets. */
+		if (cluster_ctx.clb_nlist.net_is_ignored(net_id) || cluster_ctx.clb_nlist.net_sinks(net_id).size() == 0) /* Skip ignored nets. */
 			continue;
 
 		for (ipin = 0; ipin < cluster_ctx.clb_nlist.net_pins(net_id).size(); ipin++)
 			pin_done[ipin] = false;
 
 		/* Check the SOURCE of the net. */
-		tptr = route_ctx.trace_head[net_id];
+		tptr = route_ctx.trace[net_id].head;
 		if (tptr == nullptr) {
 			vpr_throw(VPR_ERROR_ROUTE, __FILE__, __LINE__,
 				"in check_route: net %d has no routing.\n", size_t(net_id));
@@ -266,7 +268,7 @@ static void check_source(int inode, ClusterNetId net_id) {
 	blk_id = cluster_ctx.clb_nlist.net_driver_block(net_id);
 	type = device_ctx.grid[i][j].type;
 
-	if (place_ctx.block_locs[blk_id].x != i || place_ctx.block_locs[blk_id].y != j) {
+	if (place_ctx.block_locs[blk_id].loc.x != i || place_ctx.block_locs[blk_id].loc.y != j) {
 			vpr_throw(VPR_ERROR_ROUTE, __FILE__, __LINE__,
 				"in check_source: net SOURCE is in wrong location (%d,%d).\n", i, j);
 	}
@@ -326,7 +328,7 @@ static void reset_flags(ClusterNetId inet, bool * connected_to_route) {
 
     auto& route_ctx = g_vpr_ctx.routing();
 
-	tptr = route_ctx.trace_head[inet];
+	tptr = route_ctx.trace[inet].head;
 
 	while (tptr != nullptr) {
 		inode = tptr->index;
@@ -569,10 +571,10 @@ void recompute_occupancy_from_scratch() {
 	/* Now go through each net and count the tracks and pins used everywhere */
 
 	for (auto net_id : cluster_ctx.clb_nlist.nets()) {
-		if (cluster_ctx.clb_nlist.net_is_global(net_id)) /* Skip global nets. */
+		if (cluster_ctx.clb_nlist.net_is_ignored(net_id)) /* Skip ignored nets. */
 			continue;
 
-		tptr = route_ctx.trace_head[net_id];
+		tptr = route_ctx.trace[net_id].head;
 		if (tptr == nullptr)
 			continue;
 
@@ -731,7 +733,7 @@ static bool check_non_configurable_edges(ClusterNetId net, const t_non_configura
     auto& route_ctx = g_vpr_ctx.routing();
     auto& cluster_ctx = g_vpr_ctx.clustering();
 
-    t_trace* head = route_ctx.trace_head[net];
+    t_trace* head = route_ctx.trace[net].head;
 
     //Collect all the edges used by this net's routing
     std::set<t_node_edge> routing_edges;

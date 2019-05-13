@@ -56,6 +56,7 @@ extensions = [
     'sphinx.ext.todo',
     'sphinx.ext.mathjax',
     'sphinx.ext.graphviz',
+    'sphinx_markdown_tables',
     'sdcdomain',
     'archdomain',
     'rrgraphdomain',
@@ -178,7 +179,7 @@ numfig = True
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-#html_static_path = []
+html_static_path = ['_static']
 
 # Add any extra paths that contain custom files (such as robots.txt or
 # .htaccess) here, relative to this directory. These files are copied
@@ -329,5 +330,8 @@ def setup(app):
     app.add_config_value(
         'recommonmark_config', {
             'github_code_repo': 'https://github.com/verilog-to-routing/vtr-verilog-to-routing',
+            'enable_math': True,
+            'enable_inline_math': True,
         }, True)
     app.add_transform(MarkdownCodeSymlinks)
+    app.add_stylesheet('css/vtr.css')

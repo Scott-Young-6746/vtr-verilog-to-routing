@@ -118,11 +118,11 @@ bool try_breadth_first_route_net(ClusterNetId net_id, float pres_fac,
 	if (route_ctx.net_status[net_id].is_fixed) { /* Skip pre-routed nets. */
 		is_routed = true;
 
-	} else if (cluster_ctx.clb_nlist.net_is_global(net_id)) { /* Skip global nets. */
+	} else if (cluster_ctx.clb_nlist.net_is_ignored(net_id)) { /* Skip ignored nets. */
 		is_routed = true;
 
 	} else {
-		pathfinder_update_path_cost(route_ctx.trace_head[net_id], -1, pres_fac);
+		pathfinder_update_path_cost(route_ctx.trace[net_id].head, -1, pres_fac);
 		is_routed = breadth_first_route_net(net_id, router_opts.bend_cost);
 
 		/* Impossible to route? (disconnected rr_graph) */
@@ -132,7 +132,7 @@ bool try_breadth_first_route_net(ClusterNetId net_id, float pres_fac,
 			VTR_LOG("Routing failed.\n");
 		}
 
-		pathfinder_update_path_cost(route_ctx.trace_head[net_id], 1, pres_fac);
+		pathfinder_update_path_cost(route_ctx.trace[net_id].head, 1, pres_fac);
 	}
 	return (is_routed);
 }
@@ -204,7 +204,7 @@ static bool breadth_first_route_net(ClusterNetId net_id, float bend_cost) {
                 VTR_LOG("    New best cost %g\n", new_pcost);
 #endif
 
-                for (t_heap_prev prev : current->previous) {
+                for (t_heap_prev prev : current->nodes) {
 #ifdef ROUTER_DEBUG
                     VTR_LOG("    Setting routing paths for associated node %d\n", prev.to_node);
 #endif
@@ -420,7 +420,7 @@ static void breadth_first_expand_non_configurable_recurr(const float path_cost, 
         current->cost = std::min(current->cost, new_path_cost);
 
         //Record how we reached this node
-        current->previous.emplace_back(to_node, from_node, iconn);
+        current->nodes.emplace_back(to_node, from_node, iconn);
 
         //Consider any non-configurable edges which must be expanded for correctness
         auto& device_ctx = g_vpr_ctx.device();

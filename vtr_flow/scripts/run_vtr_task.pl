@@ -71,6 +71,7 @@ my $system_type            = "local";
 my $shared_script_params   = "";
 my $verbosity              = 0;
 my $short_task_names = 0;
+my $minw_hint_factor = 1.;
 
 # Parse Input Arguments
 while ( $token = shift(@ARGV) ) {
@@ -120,6 +121,10 @@ while ( $token = shift(@ARGV) ) {
 	}
 	elsif ( $token eq "-short_task_names" ) {
 		$short_task_names = 1;
+	}
+
+	elsif ( $token eq "-minw_hint_factor" ) {
+		$minw_hint_factor = shift(@ARGV);
 	}
 
 	elsif ( $token =~ /^-/ ) {
@@ -459,6 +464,8 @@ sub generate_single_task_actions {
 
                 #Add a hint about the minimum channel width (potentially saves run-time)
                 my $expected_min_W = ret_expected_min_W($circuit, $arch, $full_params_dirname, $golden_results_file);
+                $expected_min_W = int($expected_min_W * $minw_hint_factor);
+                $expected_min_W += ($expected_min_W % 2);
                 if($expected_min_W > 0) {
                     $command .= " --min_route_chan_width_hint $expected_min_W";
                 }
@@ -507,19 +514,51 @@ sub run_actions {
 
         my @pool = map { threads->create( \&do_work, $thread_work, $thread_result, $thread_return_code ) } 1 .. $threads;
 
-        for ( 1 .. $threads ) {
-            while ( my $result = $thread_result->dequeue ) {
+        #Each thread puts an 'undef' into it's output queues when it is finished (no more work to do)
+        #
+        #To ensure we get *all* the results we count the number of undef's recieved and ensure they match
+        #the number of threads before moving on.
+        #
+        #This is done for bothe the result (i.e. stdout) queue and return code queue
+        my $undef_result_count = 0;
+        while ($undef_result_count < $threads) {
+            my $result = $thread_result->dequeue();
+
+            if (defined $result) {
+                #Valid output
                 chomp($result);
-                print $result . "\n";
-            }
-            while (my $return_code = $thread_return_code->dequeue) {
-                if($return_code != 0) {
-                    $num_failures += 1;
-                }
+                print "$result\n";
+            } else {
+                #One thread finished
+                $undef_result_count += 1;
             }
         }
+        die("Thread result queue was non-empty (before join)") if ($thread_result->pending() != 0);
 
+        my $undef_return_code_count = 0;
+        while ($undef_return_code_count < $threads) {
+            my $return_code = $thread_return_code->dequeue();
+
+            if (defined $return_code) {
+                #Valid return code
+                if ($return_code != 0) {
+                    $num_failures += 1;
+                }
+            } else {
+                #One thread finished
+                $undef_return_code_count += 1;
+            }
+        }
+        die("Thread result queue was non-empty (before join)") if ($thread_return_code->pending() != 0);
+
+        #Wait on the threads (Note: should already be finished)
         $_->join for @pool;
+
+        #Since we joined the threads after they had already finished,
+        #there should be nothing left in the result queues at this point.
+        die("Thread result queue was non-empty (after join)") if ($thread_result->pending() != 0);
+        die("Thread return code queue was non-empty (after join)") if ($thread_return_code->pending() != 0);
+
     } elsif ( $system_type eq "scripts" ) {
         foreach my $action (@$actions) {
             my ($run_dir, $command, $runtime_estimate, $memory_estimate) = @$action;
@@ -556,11 +595,9 @@ sub do_work {
 
         $return_code_queue->enqueue($exit_code);
 	}
-    #Need to put undef in queues to indicate end and prevent blocking forever
+    #We indicate that a thread has finished by putting an undef in the queue
 	$return_queue->enqueue(undef);
     $return_code_queue->enqueue(undef);
-
-	#print "$tid exited loop\n"
 }
 
 sub create_run_script {
@@ -602,12 +639,18 @@ sub create_run_script {
     print $fh "\n";
     print $fh "    $args->{command}\n";
     print $fh "\n";
-    print $fh "    exit_code=\$?\n";
+    print $fh "    #The IO redirection occurs in a sub-shell,\n";
+    print $fh "    #so we need to exit it with the correct code\n";
+    print $fh "    exit \$?\n";
     print $fh "\n";
     print $fh "} |& tee vtr_flow.out\n";
     print $fh "#End I/O redirection\n";
     print $fh "\n";
-    print $fh "exit \$exit_code\n";
+    print $fh "#We used a pipe to redirect IO.\n";
+    print $fh "#To get the correct exit status we need to exit with the\n";
+    print $fh "#status of the first element in the pipeline (i.e. the real\n";
+    print $fh "#command run above)\n";
+    print $fh "exit \${PIPESTATUS[0]}\n";
 
     close($fh);
 

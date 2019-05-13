@@ -5,11 +5,16 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "vtr_assert.h"
+
 namespace vtr {
 
 //Forward declaration
 template<class K, class V, class Compare=std::less<K>>
 class flat_map;
+
+template<class K, class V, class Compare=std::less<K>>
+class flat_map2;
 
 //Helper function to create a flat map from a vector of pairs
 //without haveing to explicity specify the key and value types
@@ -102,6 +107,16 @@ class flat_map {
         size_type size() const { return vec_.size(); }
         size_type max_size() const { return vec_.max_size(); }
 
+        const mapped_type& operator[](const key_type& key) const  {
+            auto iter = find(key);
+            if(iter == end()) {
+                //Not found
+                throw std::out_of_range("Invalid key");
+            }
+
+            return iter->second;
+        }
+
         mapped_type& operator[](const key_type& key) {
             auto iter = find(key);
             if(iter == end()) {
@@ -127,7 +142,7 @@ class flat_map {
         //Insert value
         std::pair<iterator,bool> insert(const value_type& value) {
             auto iter = lower_bound(value.first);
-            if(iter != end() && iter->first == value.first) {
+            if(iter != end() && keys_equivalent(iter->first, value.first)) {
                 //Found existing
                 return std::make_pair(iter, false);
             } else {
@@ -184,7 +199,7 @@ class flat_map {
         template<class ...Args>
         iterator emplace(const key_type& key, Args&&... args) {
             auto iter = lower_bound(key);
-            if(iter != end() && iter->first == key) {
+            if(iter != end() && keys_equivalent(iter->first, key)) {
                 //Found
                 return std::make_pair(iter, false);
             } else {
@@ -212,7 +227,7 @@ class flat_map {
 
         const_iterator find(const key_type& key) const {
             auto iter = lower_bound(key);
-            if(iter != end() && iter->first == key) {
+            if(iter != end() && keys_equivalent(iter->first, key)) {
                 //Found
                 return iter;
             }
@@ -254,6 +269,10 @@ class flat_map {
         friend void swap(flat_map& lhs, flat_map& rhs) { std::swap(lhs.vec_, rhs.vec_); }
 
     private:
+        bool keys_equivalent(const key_type& lhs, const key_type& rhs) const {
+            return !key_comp()(lhs, rhs) && !key_comp()(rhs, lhs);
+        }
+
         void sort() {
             std::sort(vec_.begin(), vec_.end(), value_comp());
         }
@@ -287,6 +306,24 @@ class flat_map {
 
     private:
         std::vector<value_type> vec_;
+};
+
+//Like flat_map, but operator[] never inserts and directly returns the mapped value
+template<class K, class T, class Compare>
+class flat_map2 : public flat_map<K,T,Compare> {
+    public:
+
+        const T& operator[](const K& key) const {
+            auto itr = this->find(key);
+            if (itr == this->end()) {
+                throw std::logic_error("Key not found"); 
+            }
+            return itr->second;
+        }
+
+        T& operator[](const K& key) {
+            return const_cast<T&>(const_cast<const flat_map2*>(this)->operator[](key));
+        }
 };
 
 template<class K, class T, class Compare>

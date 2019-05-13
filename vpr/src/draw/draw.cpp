@@ -21,7 +21,6 @@
 using namespace std;
 
 #include "vtr_assert.h"
-#include "vtr_matrix.h"
 #include "vtr_ndoffsetmatrix.h"
 #include "vtr_memory.h"
 #include "vtr_log.h"
@@ -32,7 +31,6 @@ using namespace std;
 
 #include "globals.h"
 #include "graphics.h"
-#include "path_delay.h"
 #include "draw.h"
 #include "read_xml_arch_file.h"
 #include "draw_global.h"
@@ -60,6 +58,7 @@ using namespace std;
 
 #include "rr_graph.h"
 #include "route_util.h"
+#include "place_macro.h"
 
 /****************************** Define Macros *******************************/
 
@@ -262,6 +261,10 @@ const std::vector<color_types> block_type_colors = {
     ALICEBLUE,
 };
 
+//FIXME: ugly hack
+extern t_pl_macro* pl_macros;
+extern int num_pl_macros;
+
 /************************** File Scope Variables ****************************/
 
 std::string rr_highlight_message;
@@ -276,6 +279,8 @@ static void toggle_routing_bounding_box(void (*drawscreen_ptr)());
 static void toggle_routing_util(void (*drawscreen_ptr)());
 static void toggle_crit_path(void (*drawscreen_ptr)());
 static void toggle_block_pin_util(void (*drawscreen_ptr)());
+static void toggle_router_rr_costs(void (*drawscreen_ptr)());
+static void toggle_placement_macros(void (*drawscreen_ptr)());
 
 static void drawscreen();
 static void redraw_screen();
@@ -287,6 +292,7 @@ static void draw_routing_costs();
 static void draw_routing_bb();
 static void draw_routing_util();
 static void draw_crit_path();
+static void draw_placement_macros();
 
 static void highlight_blocks(float x, float y, t_event_buttonPressed button_info);
 static void act_on_mouse_over(float x, float y);
@@ -300,6 +306,7 @@ static void draw_rr();
 static void draw_rr_edges(int from_node);
 static void draw_rr_pin(int inode, const t_color& color);
 static void draw_rr_chan(int inode, const t_color color);
+static void draw_rr_src_sink(int inode, t_color color);
 static t_bound_box draw_get_rr_chan_bbox(int inode);
 static void draw_pin_to_chan_edge(int pin_node, int chan_node);
 static void draw_x(float x, float y, float size);
@@ -348,6 +355,11 @@ t_color lighten_color(t_color color, float amount);
 
 static void draw_block_pin_util();
 
+static float get_router_rr_cost(const t_rr_node_route_inf node_inf, e_draw_router_rr_cost draw_router_rr_cost);
+static void draw_router_rr_costs();
+
+static void draw_rr_costs(const std::vector<float>& rr_costs, bool lowest_cost_first=true);
+
 /********************** Subroutine definitions ******************************/
 
 
@@ -386,8 +398,9 @@ void update_screen(ScreenUpdatePriority priority, const char *msg, enum pic_type
 			create_button("Window", "Toggle Nets", toggle_nets);
 			create_button("Toggle Nets", "Blk Internal", toggle_blk_internal);
 			create_button("Blk Internal", "Blk Pin Util", toggle_block_pin_util);
+			create_button("Blk Pin Util", "Place Macros", toggle_placement_macros);
             if(setup_timing_info) {
-                create_button("Blk Pin Util", "Crit. Path", toggle_crit_path);
+                create_button("Place Macros", "Crit. Path", toggle_crit_path);
             }
 		} else if (pic_on_screen_val == ROUTING && draw_state->pic_on_screen == PLACEMENT) {
             //Routing, opening after placement
@@ -396,6 +409,7 @@ void update_screen(ScreenUpdatePriority priority, const char *msg, enum pic_type
 			create_button("Congestion", "Cong. Cost", toggle_routing_congestion_cost);
 			create_button("Cong. Cost", "Route BB", toggle_routing_bounding_box);
 			create_button("Route BB", "Routing Util", toggle_routing_util);
+			create_button("Routing Util", "Router Cost", toggle_router_rr_costs);
 		} else if (pic_on_screen_val == PLACEMENT && draw_state->pic_on_screen == ROUTING) {
             //Placement, opening after routing
 
@@ -405,17 +419,20 @@ void update_screen(ScreenUpdatePriority priority, const char *msg, enum pic_type
 			destroy_button("Cong. Cost");
 			destroy_button("Route BB");
 			destroy_button("Route Util");
+			destroy_button("Router Cost");
 		} else if (pic_on_screen_val == ROUTING
 				&& draw_state->pic_on_screen == NO_PICTURE) {
             //Routing opening first
 			create_button("Window", "Toggle Nets", toggle_nets);
 			create_button("Toggle Nets", "Blk Internal", toggle_blk_internal);
 			create_button("Blk Internal", "Blk Pin Util", toggle_block_pin_util);
-			create_button("Blk Pin Util", "Toggle RR", toggle_rr);
+			create_button("Blk Pin Util", "Place Macros", toggle_placement_macros);
+			create_button("Place Macros", "Toggle RR", toggle_rr);
 			create_button("Toggle RR", "Congestion", toggle_congestion);
 			create_button("Congestion", "Cong. Cost", toggle_routing_congestion_cost);
 			create_button("Cong. Cost", "Route BB", toggle_routing_bounding_box);
 			create_button("Route BB", "Routing Util", toggle_routing_util);
+			create_button("Routing Util", "Router Cost", toggle_router_rr_costs);
             if(setup_timing_info) {
                 create_button("Cong. Cost", "Crit. Path", toggle_crit_path);
             }
@@ -545,10 +562,14 @@ static void redraw_screen() {
 
         draw_routing_costs();
 
+        draw_router_rr_costs();
+
         draw_routing_util();
 
         draw_routing_bb();
 	}
+
+    draw_placement_macros();
 
     draw_crit_path();
 
@@ -707,6 +728,17 @@ static void toggle_block_pin_util(void (*drawscreen_ptr)()) {
     drawscreen_ptr();
 }
 
+static void toggle_placement_macros(void (*drawscreen_ptr)()) {
+	t_draw_state *draw_state = get_draw_state_vars();
+
+	e_draw_placement_macros new_state = (enum e_draw_placement_macros) (((int)draw_state->show_placement_macros + 1)
+														  % ((int)DRAW_PLACEMENT_MACROS_MAX));
+
+    draw_state->show_placement_macros = new_state;
+
+    drawscreen_ptr();
+}
+
 static void toggle_crit_path(void (*drawscreen_ptr)()) {
 	t_draw_state* draw_state = get_draw_state_vars();
 
@@ -747,6 +779,18 @@ static void toggle_crit_path(void (*drawscreen_ptr)()) {
 	drawscreen_ptr();
 }
 
+static void toggle_router_rr_costs(void (*drawscreen_ptr)()) {
+	t_draw_state* draw_state = get_draw_state_vars();
+
+	e_draw_router_rr_cost new_state = (enum e_draw_router_rr_cost) (((int)draw_state->show_router_rr_cost + 1)
+														  % ((int)DRAW_ROUTER_RR_COST_MAX));
+	draw_state->show_router_rr_cost = new_state;
+
+	if (draw_state->show_router_rr_cost == DRAW_NO_ROUTER_RR_COST) {
+		update_message(draw_state->default_message);
+    }
+    drawscreen_ptr();
+}
 
 void alloc_draw_structs(const t_arch* arch) {
 	/* Call accessor functions to retrieve global variables. */
@@ -925,13 +969,16 @@ static void drawplace() {
 				/* Draw text if the space has parts of the netlist */
 				if (bnum != EMPTY_BLOCK_ID && bnum != INVALID_BLOCK_ID) {
                     auto& cluster_ctx = g_vpr_ctx.clustering();
-					drawtext_in(abs_clb_bbox, cluster_ctx.clb_nlist.block_name(bnum));
+                    std::string name = cluster_ctx.clb_nlist.block_name(bnum) + vtr::string_fmt(" (#%zu)", size_t(bnum));
+					drawtext_in(abs_clb_bbox, name.c_str());
 				}
 
 				/* Draw text for block type so that user knows what block */
 				if (device_ctx.grid[i][j].width_offset == 0 && device_ctx.grid[i][j].height_offset == 0) {
+                    std::string block_type_loc = device_ctx.grid[i][j].type->name;
+                    block_type_loc += vtr::string_fmt(" (%d,%d)", i, j);
                     drawtext(abs_clb_bbox.get_center() - t_point(0, abs_clb_bbox.get_height()/4),
-                            device_ctx.grid[i][j].type->name, abs_clb_bbox);
+                            block_type_loc.c_str(), abs_clb_bbox);
 				}
 			}
 		}
@@ -955,8 +1002,8 @@ static void drawnets() {
 	 * blocks (or sub blocks in the case of IOs).                                */
 
 	for (auto net_id : cluster_ctx.clb_nlist.nets()) {
-		if (cluster_ctx.clb_nlist.net_is_global(net_id))
-			continue; /* Don't draw global nets. */
+		if (cluster_ctx.clb_nlist.net_is_ignored(net_id))
+			continue; /* Don't draw */
 
 		setcolor(draw_state->net_color[net_id]);
 		b1 = cluster_ctx.clb_nlist.net_driver_block(net_id);
@@ -1132,6 +1179,14 @@ static void draw_routing_costs() {
         max_cost = std::max(max_cost, cost);
     }
 
+    //Hide min value, draw_rr_costs() ignores NaN's
+	for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
+        if (rr_node_costs[inode] == min_cost) {
+            rr_node_costs[inode] = NAN;
+        }
+    }
+
+
     char msg[vtr::bufsize];
     if (draw_state->show_routing_costs == DRAW_TOTAL_ROUTING_COSTS) {
         sprintf(msg, "Total Congestion Cost Range [%g, %g]", min_cost, max_cost);
@@ -1152,39 +1207,7 @@ static void draw_routing_costs() {
     }
     update_message(msg);
 
-    std::unique_ptr<vtr::ColorMap> cmap = std::make_unique<vtr::PlasmaColorMap>(min_cost, max_cost);
-
-    //Draw the nodes in ascending order of value, this ensures high valued nodes
-    //are not overdrawn by lower value ones (e.g. when zoomed-out far)
-    std::vector<int> nodes(device_ctx.rr_nodes.size());
-    std::iota(nodes.begin(), nodes.end(), 0);
-    auto cmp_ascending_cost = [&](int lhs_node, int rhs_node) {
-        return rr_node_costs[lhs_node] < rr_node_costs[rhs_node];
-    };
-    std::sort(nodes.begin(), nodes.end(), cmp_ascending_cost);
-
-    for (int inode : nodes) {
-        float cost = rr_node_costs[inode];
-        if (cost == min_cost) continue; //Hide minimum cost resources
-
-        t_color color = to_t_color(cmap->color(cost));
-
-        switch (device_ctx.rr_nodes[inode].type()) {
-            case CHANX: //fallthrough
-            case CHANY:
-                draw_rr_chan(inode, color);
-                break;
-
-            case IPIN: //fallthrough
-            case OPIN:
-                draw_rr_pin(inode, color);
-                break;
-            default:
-                break;
-        }
-	}
-
-    draw_state->color_map = std::move(cmap);
+    draw_rr_costs(rr_node_costs, true);
 }
 
 static void draw_routing_bb() {
@@ -1234,7 +1257,6 @@ static void draw_routing_bb() {
     fillrect(draw_xlow, draw_ylow, draw_xhigh, draw_yhigh);
     
     draw_routed_net(net_id);
-
 
     std::string msg;;
     msg += "Showing BB";
@@ -1790,12 +1812,12 @@ static void draw_chanx_to_chanx_edge(int from_node, int to_node,
 		if (device_ctx.rr_nodes[to_node].direction() != BI_DIRECTION) {
 			/* must connect to to_node's wire beginning at x2 */
 			if (to_track % 2 == 0) { /* INC wire starts at leftmost edge */
-				VTR_ASSERT(from_xlow < to_xlow);
+			    VTR_ASSERT(from_xlow < to_xlow);
 				x2 = to_chan.left();
 				/* since no U-turns from_track must be INC as well */
 				x1 = draw_coords->tile_x[to_xlow - 1] + draw_coords->get_tile_width();
 			} else { /* DEC wire starts at rightmost edge */
-				VTR_ASSERT(from_xhigh > to_xhigh);
+			    VTR_ASSERT(from_xhigh > to_xhigh);
 				x2 = to_chan.right();
 				x1 = draw_coords->tile_x[to_xhigh + 1];
 			}
@@ -2081,6 +2103,22 @@ void draw_get_rr_pin_coords(const t_rr_node* node, float *xcen, float *ycen) {
 	*ycen = yc;
 }
 
+static void draw_rr_src_sink(int inode, t_color color) {
+	t_draw_coords* draw_coords = get_draw_coords_vars();
+
+    auto& device_ctx = g_vpr_ctx.device();
+
+    int xlow = device_ctx.rr_nodes[inode].xlow();
+    int ylow = device_ctx.rr_nodes[inode].ylow();
+    int xhigh = device_ctx.rr_nodes[inode].xhigh();
+    int yhigh = device_ctx.rr_nodes[inode].yhigh();
+
+    setcolor(color);
+
+    fillrect(draw_coords->get_tile_width() * xlow, draw_coords->get_tile_height() * ylow,
+            draw_coords->get_tile_width() * xhigh, draw_coords->get_tile_height() * yhigh);
+}
+
 /* Draws the nets in the positions fixed by the router.  If draw_net_type is *
 * ALL_NETS, draw all the nets.  If it is HIGHLIGHTED, draw only the nets    *
 * that are not coloured black (useful for drawing over the rr_graph).       */
@@ -2109,13 +2147,13 @@ static void draw_routed_net(ClusterNetId net_id) {
 
 	t_draw_state* draw_state = get_draw_state_vars();
 
-    if (cluster_ctx.clb_nlist.net_is_global(net_id)) /* Don't draw global nets. */
+    if (cluster_ctx.clb_nlist.net_is_ignored(net_id)) /* Don't draw. */
         return;
 
-    if (route_ctx.trace_head[net_id] == nullptr) /* No routing.  Skip.  (Allows me to draw */
+    if (route_ctx.trace[net_id].head == nullptr) /* No routing.  Skip.  (Allows me to draw */
         return; /* partially complete routes).            */
 
-    t_trace* tptr = route_ctx.trace_head[net_id]; /* SOURCE to start */
+    t_trace* tptr = route_ctx.trace[net_id].head; /* SOURCE to start */
     int inode = tptr->index;
 
     std::vector<int> rr_nodes_to_draw;
@@ -2344,11 +2382,12 @@ static void highlight_nets(char *message, int hit_node) {
 	t_draw_state* draw_state = get_draw_state_vars();
 
 	for (auto net_id : cluster_ctx.clb_nlist.nets()) {
-		for (tptr = route_ctx.trace_head[net_id]; tptr != nullptr; tptr = tptr->next) {
+		for (tptr = route_ctx.trace[net_id].head; tptr != nullptr; tptr = tptr->next) {
 			if (draw_state->draw_rr_node[tptr->index].color == MAGENTA) {
 				draw_state->net_color[net_id] = draw_state->draw_rr_node[tptr->index].color;
 				if (tptr->index == hit_node) {
-					sprintf(message, "%s  ||  Net: %zu (%s)", message, size_t(net_id),
+                    std::string orig_msg(message);
+					sprintf(message, "%s  ||  Net: %zu (%s)", orig_msg.c_str(), size_t(net_id),
 							cluster_ctx.clb_nlist.net_name(net_id).c_str());
 				}
 			}
@@ -2656,7 +2695,7 @@ static void highlight_blocks(float abs_x, float abs_y, t_event_buttonPressed but
 	} else {
 		/* Highlight block and fan-in/fan-outs. */
 		draw_highlight_blocks_color(cluster_ctx.clb_nlist.block_type(clb_index), clb_index);
-		sprintf(msg, "Block #%zu (%s) at (%d, %d) selected.", size_t(clb_index), cluster_ctx.clb_nlist.block_name(clb_index).c_str(), place_ctx.block_locs[clb_index].x, place_ctx.block_locs[clb_index].y);
+		sprintf(msg, "Block #%zu (%s) at (%d, %d) selected.", size_t(clb_index), cluster_ctx.clb_nlist.block_name(clb_index).c_str(), place_ctx.block_locs[clb_index].loc.x, place_ctx.block_locs[clb_index].loc.y);
 	}
 
 	update_message(msg);
@@ -3288,7 +3327,7 @@ static std::vector<int> trace_routed_connection_rr_nodes(const ClusterNetId net_
     //Conver the traceback into an easily search-able
     t_rt_node* rt_root = traceback_to_route_tree(net_id);
 
-    VTR_ASSERT(rt_root->inode == route_ctx.net_rr_terminals[net_id][driver_pin]);
+    VTR_ASSERT(rt_root && rt_root->inode == route_ctx.net_rr_terminals[net_id][driver_pin]);
 
     int sink_rr_node = route_ctx.net_rr_terminals[net_id][sink_pin];
 
@@ -3607,3 +3646,180 @@ static void draw_routing_util() {
 
     draw_state->color_map = std::move(cmap);
 }
+
+static float get_router_rr_cost(const t_rr_node_route_inf node_inf, e_draw_router_rr_cost draw_router_rr_cost) {
+    if (draw_router_rr_cost == DRAW_ROUTER_RR_COST_TOTAL) {
+        return node_inf.path_cost;
+    } else if (draw_router_rr_cost == DRAW_ROUTER_RR_COST_KNOWN) {
+        return node_inf.backward_path_cost;
+    } else if (draw_router_rr_cost == DRAW_ROUTER_RR_COST_EXPECTED) {
+        return node_inf.path_cost - node_inf.backward_path_cost;
+    }
+
+    VPR_THROW(VPR_ERROR_DRAW, "Invalid Router RR cost drawing type");
+}
+
+static void draw_router_rr_costs() {
+	t_draw_state* draw_state = get_draw_state_vars();
+    if (draw_state->show_router_rr_cost == DRAW_NO_ROUTER_RR_COST) {
+        return;
+    }
+
+    auto& device_ctx = g_vpr_ctx.device();
+    auto& routing_ctx = g_vpr_ctx.routing();
+
+    std::vector<float> rr_costs(device_ctx.rr_nodes.size());
+
+    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
+        float cost = get_router_rr_cost(routing_ctx.rr_node_route_inf[inode], draw_state->show_router_rr_cost);
+        rr_costs[inode] = cost;
+    }
+
+    bool all_nan = true;
+    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
+        if (std::isinf(rr_costs[inode])) {
+            rr_costs[inode] = NAN;
+        } else {
+            all_nan = false;
+        }
+    }
+
+    if (!all_nan) {
+        draw_rr_costs(rr_costs, false);
+    }
+
+
+    if (draw_state->show_router_rr_cost == DRAW_ROUTER_RR_COST_TOTAL) {
+        update_message("Routing Expected Total Cost (known + estimate)");
+    } else if (draw_state->show_router_rr_cost == DRAW_ROUTER_RR_COST_KNOWN) {
+        update_message("Routing Known Cost (from source to node)");
+    } else {
+        update_message("Routing Expected Cost (from node to target)");
+        VTR_ASSERT(draw_state->show_router_rr_cost == DRAW_ROUTER_RR_COST_EXPECTED);
+    }
+}
+
+static void draw_rr_costs(const std::vector<float>& rr_costs, bool lowest_cost_first) {
+	t_draw_state* draw_state = get_draw_state_vars();
+
+	/* Draws routing costs */
+
+    auto& device_ctx = g_vpr_ctx.device();
+
+	setlinewidth(2);
+
+    VTR_ASSERT(rr_costs.size() == device_ctx.rr_nodes.size());
+
+    float min_cost = std::numeric_limits<float>::infinity();
+    float max_cost = -min_cost;
+	for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
+        if (std::isnan(rr_costs[inode])) continue;
+
+        min_cost = std::min(min_cost, rr_costs[inode]);
+        max_cost = std::max(max_cost, rr_costs[inode]);
+    }
+
+    std::unique_ptr<vtr::ColorMap> cmap = std::make_unique<vtr::PlasmaColorMap>(min_cost, max_cost);
+
+    //Draw the nodes in ascending order of value, this ensures high valued nodes
+    //are not overdrawn by lower value ones (e.g. when zoomed-out far)
+    std::vector<int> nodes(device_ctx.rr_nodes.size());
+    std::iota(nodes.begin(), nodes.end(), 0);
+    auto cmp_ascending_cost = [&](int lhs_node, int rhs_node) {
+        if (lowest_cost_first) {
+            return rr_costs[lhs_node] > rr_costs[rhs_node];
+        }
+        return rr_costs[lhs_node] < rr_costs[rhs_node];
+    };
+    std::sort(nodes.begin(), nodes.end(), cmp_ascending_cost);
+
+    for (int inode : nodes) {
+        float cost = rr_costs[inode];
+        if (std::isnan(cost)) continue;
+
+        t_color color = to_t_color(cmap->color(cost));
+
+        switch (device_ctx.rr_nodes[inode].type()) {
+            case CHANX: //fallthrough
+            case CHANY:
+                draw_rr_chan(inode, color);
+                draw_rr_edges(inode);
+                break;
+
+            case IPIN: //fallthrough
+                draw_rr_pin(inode, color);
+                break;
+            case OPIN:
+                draw_rr_pin(inode, color);
+                draw_rr_edges(inode);
+                break;
+            case SOURCE:
+            case SINK:
+                color.alpha *= 0.8;
+                draw_rr_src_sink(inode, color);
+                break;
+            default:
+                break;
+        }
+	}
+
+    draw_state->color_map = std::move(cmap);
+}
+
+static void draw_placement_macros() {
+	t_draw_state* draw_state = get_draw_state_vars();
+
+    if (draw_state->show_placement_macros == DRAW_NO_PLACEMENT_MACROS) {
+        return;
+    }
+
+	t_draw_coords* draw_coords = get_draw_coords_vars();
+
+    auto& place_ctx = g_vpr_ctx.placement();
+    auto& cluster_ctx = g_vpr_ctx.clustering();
+    for (size_t imacro = 0; imacro < place_ctx.pl_macros.size(); ++imacro) {
+        const t_pl_macro* pl_macro = &place_ctx.pl_macros[imacro];
+
+        //TODO: for now we just draw the bounding box of the macro, which is incorrect for non-rectangular macros...
+        int xlow = std::numeric_limits<int>::max();
+        int ylow = std::numeric_limits<int>::max();
+        int xhigh = std::numeric_limits<int>::min();
+        int yhigh = std::numeric_limits<int>::min();
+
+        int x_root = OPEN;
+        int y_root = OPEN;
+        for (size_t imember = 0; imember < pl_macro->members.size(); ++imember) {
+            const t_pl_macro_member* member = &pl_macro->members[imember];
+
+            ClusterBlockId blk = member->blk_index;
+
+            if (imember == 0) {
+                x_root = place_ctx.block_locs[blk].loc.x;
+                y_root = place_ctx.block_locs[blk].loc.y;
+            }
+
+            int x = x_root + member->offset.x;
+            int y = y_root + member->offset.y;
+
+            xlow = std::min(xlow, x);
+            ylow = std::min(ylow, y);
+            xhigh = std::max(xhigh, x + cluster_ctx.clb_nlist.block_type(blk)->width);
+            yhigh = std::max(yhigh, y + cluster_ctx.clb_nlist.block_type(blk)->height);
+        }
+
+        int draw_xlow = draw_coords->tile_x[xlow];
+        int draw_ylow = draw_coords->tile_y[ylow];
+        int draw_xhigh = draw_coords->tile_x[xhigh];
+        int draw_yhigh = draw_coords->tile_y[yhigh];
+
+        setcolor(RED);
+        drawrect(draw_xlow, draw_ylow, draw_xhigh, draw_yhigh);
+
+        t_color fill = SKYBLUE;
+        fill.alpha *= 0.3;
+        setcolor(fill);
+        fillrect(draw_xlow, draw_ylow, draw_xhigh, draw_yhigh);
+
+    }
+}
+

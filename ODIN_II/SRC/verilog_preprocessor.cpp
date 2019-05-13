@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "verilog_preprocessor.h"
-#include "types.h"
+#include "odin_types.h"
 #include "vtr_util.h"
 #include "vtr_memory.h"
 #include "odin_util.h"
@@ -142,25 +142,25 @@ int add_veri_define(char *symbol, char *value, int line, veri_include *defined_i
 	{
 		if (0 == strcmp(def_iterator->symbol, symbol))
 		{
-			fprintf(stderr, "Warning: The constant %s defined on line %d in %s was previously defined on line %d in %s\n",
+			warning_message(PARSE_ERROR, -1, -1, "The constant %s defined on line %d in %s was previously defined on line %d in %s\n",
 				symbol, line, defined_in->path, def_iterator->line, def_iterator->defined_in->path);
 
 			if (value == NULL || (value[0] == '/' && value[1] == '/'))
 #ifndef BLOCK_EMPTY_DEFINES
 			{
-				fprintf(stderr, "\tWarning: The new value of %s is empty\n\n", symbol);
+				warning_message(PARSE_ERROR, -1, -1, "The new value of %s is empty\n\n", symbol);
 				vtr::free(def_iterator->value);
 				def_iterator->value =NULL;
 			}
 #else
 			{
-				fprintf(stderr, "\tWarning: The new value of %s is empty, doing nothing\n\n", symbol);
+				warning_message(PARSE_ERROR, -1, -1, "The new value of %s is empty, doing nothing\n\n", symbol);
 				return 0;
 			}
 #endif
 			else if (0 != strcmp(def_iterator->value, value))
 			{
-				fprintf(stderr, "\tWarning: The value of %s has been redefined to %s, the previous value was %s\n\n",
+				warning_message(PARSE_ERROR, -1, -1, "The value of %s has been redefined to %s, the previous value was %s\n\n",
 					symbol, value, def_iterator->value);
 				vtr::free(def_iterator->value);
 				def_iterator->value = (char *)vtr::strdup(value);
@@ -208,14 +208,9 @@ veri_include* add_veri_include(const char *path, int line, veri_include *include
 
 	/* Scan previous includes to make sure the file wasn't included previously. */
 	for (i = 0; i < veri_includes.current_index && i < veri_includes.current_size && inc_iterator != NULL; inc_iterator = veri_includes.included_files[++i])
-	{
 		if (0 == strcmp(path, inc_iterator->path))
-		{
-			printf("Warning: including %s multiple times\n", path);
-//			vtr::free(new_inc);
-//			return NULL;
-		}
-	}
+			warning_message(PARSE_ERROR, line, -1, "Warning: including %s multiple times\n", path);
+	
 
 	new_inc->path = vtr::strdup(path);
 	new_inc->included_from = included_from;
@@ -301,7 +296,7 @@ FILE* veri_preproc(FILE *source)
 {
 	extern global_args_t global_args;
 	extern config_t configuration;
-	extern size_t current_parse_file;
+	extern int current_parse_file;
 	FILE *preproc_producer = NULL;
 
 	/* Was going to use filename to prevent duplication but the global var isn't used in the case of a config value */
@@ -398,7 +393,7 @@ void veri_preproc_bootstraped(FILE *original_source, FILE *preproc_producer, ver
 
 	while (NULL != fgets(line, MaxLine, source))
 	{
-		//fprintf(stderr, "%s:%d\t%s", current_include->path,line_number, line);
+		//fprintf(stderr, "%s:%ld\t%s", current_include->path,line_number, line);
 		char proc_line[MaxLine] ;
 		char symbol[MaxLine] ;
 		char *p_proc_line = proc_line ;
@@ -434,7 +429,7 @@ void veri_preproc_bootstraped(FILE *original_source, FILE *preproc_producer, ver
 		vtr::strncpy( p_proc_line, last_pch, MaxLine) ;
 		vtr::strncpy( line, proc_line, MaxLine) ;
 
-		//fprintf(stderr, "%s:%d\t%s\n", current_include->path,line_number, line);
+		//fprintf(stderr, "%s:%ld\t%s\n", current_include->path,line_number, line);
 
 		/* Preprocessor directives have a backtick on the first column. */
 		if (line[0] == '`')
@@ -452,7 +447,7 @@ void veri_preproc_bootstraped(FILE *original_source, FILE *preproc_producer, ver
 				/* If we failed to open the included file handle the error */
 				if (!included_file)
 				{
-					fprintf(stderr, "Warning: Unable to open file %s included on line %d of %s\n",
+					warning_message(PARSE_ERROR, -1, -1, "Unable to open file %s included on line %d of %s\n",
 						token, line_number, current_include->path);
 					perror("included_file : fopen");
 					/*return erro or exit ? */
@@ -589,6 +584,7 @@ void veri_preproc_bootstraped(FILE *original_source, FILE *preproc_producer, ver
 			if(strnlen(line, MaxLine) <= 0)
 			{
 				/* There is nothing to print */
+				fprintf(preproc_producer, "\n");
 			}
 			else if( fprintf(preproc_producer, "%s\n", line) < 0)//fputs(line, preproc_producer)
 			{
@@ -603,38 +599,66 @@ void veri_preproc_bootstraped(FILE *original_source, FILE *preproc_producer, ver
 }
 
 /* General Utility methods ------------------------------------------------- */
+#define UPPER_BUFFER_LIMIT 32728
+bool is_whitespace(const char in)
+{
+	return (in == ' ' || in == '\t' || in == '\n' || in == '\r');
+}
 
 /**
  * the trim function remove consequent whitespace and remove trailing whitespace
  */
-inline static bool are_both_whitespace(char a, char b) 
-{ 
-	return isspace(a) && isspace(b);
-}
-
-char* trim(char *string)
+char *trim(char *input_str)
 {
-	if (!string)
-		return string;
-
-	std::string temp = string;
-	//replace large space{1 or more} with single space inside text
-	std::string::iterator new_end = std::unique(temp.begin(), temp.end(), are_both_whitespace);
-	temp.erase(new_end, temp.end());   
-
-	//remove head whitespace
-	if( temp.length() > 0 && isspace(temp[0]) )					temp.erase(0,1);
-	//remove trailing whitespace
-	if( temp.length() > 0 && isspace(temp[temp.length()-1]) )	temp.erase(temp.length()-1,1);
-	//copy string over
-	if( temp.length() > 0)										memcpy(string,temp.c_str(), temp.length());
-	
-	//make sure we have a nul terminated string
-	string[temp.length()] = '\0';
-
-	return string;
+	return trim(input_str, UPPER_BUFFER_LIMIT);
 }
 
+char* trim(char *input_string, size_t n)
+{
+	size_t upper_limit = (n < 1)?  UPPER_BUFFER_LIMIT: (n > UPPER_BUFFER_LIMIT)? UPPER_BUFFER_LIMIT: n;
+	if (!input_string)
+		return input_string;
+  
+	int head = 0;
+	int tail = 0;
+	char current = ' ';
+	char previous = ' ';
+
+	// trim head and compress
+	while( tail < upper_limit && input_string[tail] != '\0' )
+	{
+		previous = current;
+		current = input_string[tail];
+		input_string[tail] = '\0';
+
+		tail += 1;
+
+		if( is_whitespace(current) )
+		{
+			if( ! is_whitespace(previous) )
+			{
+				input_string[head] = ' ';
+				head += 1;	
+			}
+		}
+		else
+		{
+			input_string[head] = current;
+			head += 1;	
+		}
+	}
+	input_string[head] = '\0';
+
+	// trim tail end
+	while( head >= 0 
+	&& (input_string[head] == '\0' || is_whitespace(input_string[head]) ) )
+	{
+		input_string[head] = '\0';
+		head -= 1;
+	}
+
+	return input_string;
+}
 /* ------------------------------------------------------------------------- */
 
 
@@ -680,16 +704,14 @@ FILE *format_verilog_file(FILE *source)
 {
 	FILE *destination = tmpfile();
 	char searchString [4][7]= {"input","output","reg","wire"};
-	char *line;
-	char *line_to_free;
+	char templine[MaxLine] = { 0 };
+	char *line = templine;
 	char ch;
 	unsigned i;
 	char temp[10];
 	int j;
 	static const char *pattern = "\\binput\\b|\\boutput\\b|\\breg\\b|\\bwire\\b";
 	i = 0;
-	line = (char *) calloc (MaxLine, sizeof(char));
-	line_to_free = line;
 	while( (ch = getc(source) ) != ';')
 	{
 		line[i++] = ch;
@@ -707,17 +729,22 @@ FILE *format_verilog_file(FILE *source)
 	}
 	line[i++] = ch;
 	line[i] = '\0';
-	line = find_substring(line,"module",2);
+	std::string sub_line = find_substring(line,"module",2);
+	sprintf(line,"%s",sub_line.c_str());
 	line = search_replace(line,"\n","",2);
 
 	if (! validate_string_regex(line, pattern))
 	{
+		free(line);
 	 	rewind(source);
 		return source;
 	}
 	for (i = 0; i < 4; i++)
 	{
-		line = search_replace(line,searchString[i],"",2);
+		char *line_cpy = vtr::strdup(line);
+		free(line);
+		line = search_replace(line_cpy,searchString[i],"",2);
+		vtr::free(line_cpy);
 	}
 	i = 0;
 	while (i < strnlen(line, MaxLine))
@@ -739,10 +766,10 @@ FILE *format_verilog_file(FILE *source)
 			i++;
 	}
 	fputs(line, destination);
+	vtr::free(line);
 	rewind(source);
 	destination = format_verilog_variable(source,destination);
 	rewind(destination);
-	free(line_to_free);
 	return destination;
 }
 

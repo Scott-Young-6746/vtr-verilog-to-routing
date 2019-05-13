@@ -54,13 +54,13 @@ static string format_name(string name);
 /*************Global Functions****************************/
 bool read_route(const char* route_file, const t_router_opts& router_opts, bool verify_file_digests) {
 
-    /* Reads in the routing file to fill in the trace_head and t_clb_opins_used data structure.
+    /* Reads in the routing file to fill in the trace.head and t_clb_opins_used data structure.
      * Perform a series of verification tests to ensure the netlist, placement, and routing
      * files match */
     auto& device_ctx = g_vpr_ctx.mutable_device();
     auto& place_ctx = g_vpr_ctx.placement();
     /* Begin parsing the file */
-    VTR_LOG("Begin loading packed FPGA routing file.\n");
+    VTR_LOG("Begin loading FPGA routing file.\n");
 
     string header_str;
 
@@ -123,7 +123,7 @@ bool read_route(const char* route_file, const t_router_opts& router_opts, bool v
 	recompute_occupancy_from_scratch();
     bool is_feasible = feasible_routing();
     if (is_feasible) {
-        check_route(router_opts.route_type, device_ctx.num_rr_switches);
+        check_route(router_opts.route_type);
     }
     get_serial_num();
 
@@ -160,7 +160,7 @@ static void process_nets(ifstream &fp, ClusterNetId inet, string name, std::vect
     if (input_tokens.size() > 3 && input_tokens[3] == "global"
             && input_tokens[4] == "net" && input_tokens[5] == "connecting:") {
         /* Global net.  Never routed. */
-        if (!cluster_ctx.clb_nlist.net_is_global(inet)) {
+        if (!cluster_ctx.clb_nlist.net_is_ignored(inet)) {
             vpr_throw(VPR_ERROR_ROUTE, filename, lineno,
                     "Net %lu should be a global net", size_t(inet));
         }
@@ -177,7 +177,7 @@ static void process_nets(ifstream &fp, ClusterNetId inet, string name, std::vect
         process_global_blocks(fp, inet, filename, lineno);
     } else {
         /* Not a global net */
-        if (cluster_ctx.clb_nlist.net_is_global(inet)) {
+        if (cluster_ctx.clb_nlist.net_is_ignored(inet)) {
             VTR_LOG_WARN( "Net %lu (%s) is marked as global in the netlist, but is non-global in the .route file\n", size_t(inet), cluster_ctx.clb_nlist.net_name(inet).c_str());
         }
 
@@ -196,14 +196,14 @@ static void process_nets(ifstream &fp, ClusterNetId inet, string name, std::vect
 }
 
 static void process_nodes(ifstream & fp, ClusterNetId inet, const char* filename, int& lineno) {
-    /* Not a global net. Goes through every node and add it into trace_head*/
+    /* Not a global net. Goes through every node and add it into trace.head*/
 
     auto& cluster_ctx = g_vpr_ctx.mutable_clustering();
     auto& device_ctx = g_vpr_ctx.mutable_device();
     auto& route_ctx = g_vpr_ctx.mutable_routing();
     auto& place_ctx = g_vpr_ctx.placement();
 
-    t_trace *tptr = route_ctx.trace_head[inet];
+    t_trace *tptr = route_ctx.trace[inet].head;
 
     /*remember the position of the last line in order to go back*/
     streampos oldpos = fp.tellg();
@@ -316,13 +316,13 @@ static void process_nodes(ifstream & fp, ClusterNetId inet, const char* filename
                 switch_id = atoi(tokens[7 + offset].c_str());
             }
 
-            /* Allocate and load correct values to trace_head*/
+            /* Allocate and load correct values to trace.head*/
             if (node_count == 0) {
-                route_ctx.trace_head[inet] = alloc_trace_data();
-                route_ctx.trace_head[inet]->index = inode;
-                route_ctx.trace_head[inet]->iswitch = switch_id;
-                route_ctx.trace_head[inet]->next = nullptr;
-                tptr = route_ctx.trace_head[inet];
+                route_ctx.trace[inet].head = alloc_trace_data();
+                route_ctx.trace[inet].head->index = inode;
+                route_ctx.trace[inet].head->iswitch = switch_id;
+                route_ctx.trace[inet].head->next = nullptr;
+                tptr = route_ctx.trace[inet].head;
                 node_count++;
             } else {
                 tptr->next = alloc_trace_data();
@@ -379,10 +379,10 @@ static void process_global_blocks(ifstream &fp, ClusterNetId inet, const char* f
                         "Block %s for block number %lu specified in the routing file does not match given %s",
                         tokens[1].c_str(), size_t(bnum), cluster_ctx.clb_nlist.block_name(bnum).c_str());
             }
-            if (place_ctx.block_locs[bnum].x != x || place_ctx.block_locs[bnum].y != y) {
+            if (place_ctx.block_locs[bnum].loc.x != x || place_ctx.block_locs[bnum].loc.y != y) {
                 vpr_throw(VPR_ERROR_ROUTE, filename, lineno,
                         "The placement coordinates (%d, %d) of %d block does not match given (%d, %d)",
-                        x, y, place_ctx.block_locs[bnum].x, place_ctx.block_locs[bnum].y);
+                        x, y, place_ctx.block_locs[bnum].loc.x, place_ctx.block_locs[bnum].loc.y);
             }
 
 			int pin_index = cluster_ctx.clb_nlist.net_pin_physical_index(inet, pin_counter);

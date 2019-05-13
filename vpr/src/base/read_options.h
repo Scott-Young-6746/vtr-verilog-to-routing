@@ -25,7 +25,6 @@ struct t_options {
     argparse::ArgValue<std::string> pad_loc_file;
     argparse::ArgValue<std::string> write_rr_graph_file;
     argparse::ArgValue<std::string> read_rr_graph_file;
-    argparse::ArgValue<std::string> hmetis_input_file;
 
     /* Stage Options */
     argparse::ArgValue<bool> do_packing;
@@ -43,7 +42,6 @@ struct t_options {
     argparse::ArgValue<bool> show_version;
     argparse::ArgValue<size_t> num_workers;
     argparse::ArgValue<bool> timing_analysis;
-    argparse::ArgValue<std::string> SlackDefinition; //TODO: eventually remove
     argparse::ArgValue<bool> CreateEchoFile;
     argparse::ArgValue<bool> verify_file_digests;
     argparse::ArgValue<std::string> device_layout;
@@ -69,6 +67,7 @@ struct t_options {
     argparse::ArgValue<bool> timing_driven_clustering;
     argparse::ArgValue<e_cluster_seed> cluster_seed_type;
     argparse::ArgValue<bool> enable_clustering_pin_feasibility_filter;
+    argparse::ArgValue<e_balance_block_type_util> balance_block_type_utilization;
     argparse::ArgValue<std::vector<std::string>> target_external_pin_util;
     argparse::ArgValue<int> pack_verbosity;
 
@@ -90,6 +89,14 @@ struct t_options {
     argparse::ArgValue<int> inner_loop_recompute_divider;
     argparse::ArgValue<float> place_exp_first;
     argparse::ArgValue<float> place_exp_last;
+    argparse::ArgValue<float> place_delay_offset;
+    argparse::ArgValue<int> place_delay_ramp_delta_threshold;
+    argparse::ArgValue<float> place_delay_ramp_slope;
+    argparse::ArgValue<float> place_tsu_rel_margin;
+    argparse::ArgValue<float> place_tsu_abs_margin;
+    argparse::ArgValue<std::string> post_place_timing_report_file;
+    argparse::ArgValue<PlaceDelayModelType> place_delay_model;
+    argparse::ArgValue<e_reducer> place_delay_model_reducer;
 
     /* Router Options */
     argparse::ArgValue<int> max_router_iterations;
@@ -111,13 +118,20 @@ struct t_options {
     argparse::ArgValue<float> astar_fac;
     argparse::ArgValue<float> max_criticality;
     argparse::ArgValue<float> criticality_exp;
+    argparse::ArgValue<float> router_init_wirelength_abort_threshold;
     argparse::ArgValue<e_incr_reroute_delay_ripup> incr_reroute_delay_ripup;
     argparse::ArgValue<e_routing_failure_predictor> routing_failure_predictor;
     argparse::ArgValue<e_routing_budgets_algorithm> routing_budgets_algorithm;
     argparse::ArgValue<bool> save_routing_per_iteration;
     argparse::ArgValue<float> congested_routing_iteration_threshold_frac;
     argparse::ArgValue<e_route_bb_update> route_bb_update;
+    argparse::ArgValue<int> router_high_fanout_threshold;
     argparse::ArgValue<int> router_debug_net;
+    argparse::ArgValue<int> router_debug_sink_rr;
+    argparse::ArgValue<e_router_lookahead> router_lookahead_type;
+    argparse::ArgValue<int> router_max_convergence_count;
+    argparse::ArgValue<float> router_reconvergence_cpd_threshold;
+    argparse::ArgValue<std::string> router_first_iteration_timing_report_file;
 
     /* Analysis options */
     argparse::ArgValue<bool> full_stats;
